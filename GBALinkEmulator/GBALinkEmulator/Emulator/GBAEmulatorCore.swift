@@ -194,7 +194,7 @@ final class GBAEmulatorCore: GBACoreProtocol {
         if elapsed >= 1.0 {
             currentFPS = Double(fpsFrameCount) / elapsed
             print(String(format: "[GBAEmulatorCore] FPS: %.2f (frames: %d)",
-                        currentFPS, fpsFrameCount))
+                         currentFPS, fpsFrameCount))
             fpsStartTime = Date()
             fpsFrameCount = 0
         }
@@ -203,7 +203,7 @@ final class GBAEmulatorCore: GBACoreProtocol {
     // MARK: - Audio (AVAudioEngine + AVAudioPlayerNode)
 
     private func setupAudio() {
-        let engine     = AVAudioEngine()
+        let engine = AVAudioEngine()
         let playerNode = AVAudioPlayerNode()
 
         // GBA outputs 32768 Hz stereo via mGBA's blip_buf resampler
@@ -231,17 +231,17 @@ final class GBAEmulatorCore: GBACoreProtocol {
         }
 
         playerNode.play()
-        audioEngine     = engine
+        audioEngine = engine
         audioPlayerNode = playerNode
-        audioFormat     = format
+        audioFormat = format
     }
 
     private func teardownAudio() {
         audioPlayerNode?.stop()
         audioEngine?.stop()
-        audioEngine     = nil
+        audioEngine = nil
         audioPlayerNode = nil
-        audioFormat     = nil
+        audioFormat = nil
     }
 
     /// Pull samples from mGBA's blip buffers and send to AVAudioEngine.
