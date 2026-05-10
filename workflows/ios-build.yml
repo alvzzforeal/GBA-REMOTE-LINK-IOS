@@ -1,0 +1,205 @@
+name: iOS Build & Archive
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:        # allows manual trigger from GitHub UI
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Required GitHub Secrets (Settings → Secrets → Actions):
+#
+#   APPLE_TEAM_ID              → Your 10-char Apple Team ID (e.g. ABCDE12345)
+#   MATCH_GIT_URL              → SSH or HTTPS URL of your match certificates repo
+#   MATCH_PASSWORD             → Passphrase used to encrypt match repo
+#   MATCH_GIT_BASIC_AUTH       → base64("user:token") for HTTPS match repo access
+#   APP_STORE_CONNECT_API_KEY  → Contents of the .p8 key file (paste raw text)
+#   APP_STORE_CONNECT_KEY_ID   → Key ID from App Store Connect (10 chars)
+#   APP_STORE_CONNECT_ISSUER   → Issuer UUID from App Store Connect
+#   KEYCHAIN_PASSWORD          → Any strong random string for CI keychain
+#
+# Optional – only needed for TestFlight upload step:
+#   APP_BUNDLE_ID              → e.g. com.yourorg.GBALinkEmulator
+# ─────────────────────────────────────────────────────────────────────────────
+
+env:
+  SCHEME:          GBALinkEmulator
+  PROJECT:         GBALinkEmulator/GBALinkEmulator.xcodeproj
+  CONFIGURATION:   Release
+  PLATFORM:        "generic/platform=iOS"
+  DERIVED_DATA:    ${{ github.workspace }}/DerivedData
+  ARCHIVE_PATH:    ${{ github.workspace }}/build/GBALinkEmulator.xcarchive
+  EXPORT_PATH:     ${{ github.workspace }}/build/export
+  EXPORT_OPTIONS:  GBALinkEmulator/ExportOptions.plist
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  build:
+    name: Build & Archive (Xcode / mGBA)
+    runs-on: macos-14          # Apple Silicon runner – required for arm64 iOS builds
+    timeout-minutes: 60
+
+    steps:
+
+      # 1. Check out repository
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive   # needed if mGBA is a git submodule
+
+      # 2. Select Xcode version
+      - name: Select Xcode 15.4
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
+
+      # 3. Cache SPM / Homebrew dependencies
+      - name: Cache SPM packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/DerivedData/SourcePackages
+            ~/Library/Caches/org.swift.swiftpm
+          key: spm-${{ runner.os }}-${{ hashFiles('**/Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-
+
+      # 4. Install cmake + ninja (needed if building mGBA from source)
+      - name: Install cmake & ninja
+        run: |
+          brew install cmake ninja
+          cmake --version
+          ninja --version
+
+      # 5. Build mGBA static library for iOS arm64 (if not using SPM xcframework)
+      #    Skip this step if you use the SPM dependency in Package.swift instead.
+      # - name: Build libmgba for iOS arm64
+      #   run: |
+      #     git clone --depth 1 --branch 0.10.3 https://github.com/mgba-emu/mgba.git /tmp/mgba
+      #     cmake /tmp/mgba \
+      #       -B /tmp/mgba-build \
+      #       -G Ninja \
+      #       -DCMAKE_TOOLCHAIN_FILE=/tmp/mgba/cmake/Toolchains/iOS.cmake \
+      #       -DCMAKE_BUILD_TYPE=Release \
+      #       -DBUILD_SHARED=OFF \
+      #       -DBUILD_STATIC=ON \
+      #       -DUSE_LZMA=OFF \
+      #       -DUSE_PNG=OFF \
+      #       -DUSE_SQLITE3=OFF \
+      #       -DCMAKE_INSTALL_PREFIX=/tmp/mgba-install
+      #     cmake --build /tmp/mgba-build --target install -j$(sysctl -n hw.logicalcpu)
+      #     # Copy into project
+      #     cp /tmp/mgba-install/lib/libmgba.a GBALinkEmulator/
+      #     cp -r /tmp/mgba-install/include GBALinkEmulator/mGBA-include
+
+      # 6. Resolve SPM packages
+      - name: Resolve Swift packages
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -derivedDataPath "$DERIVED_DATA"
+
+      # 7. Build (compile check, no archive)
+      - name: Build (compile)
+        run: |
+          xcodebuild build \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration "$CONFIGURATION" \
+            -destination "$PLATFORM" \
+            -derivedDataPath "$DERIVED_DATA" \
+            CODE_SIGNING_ALLOWED=NO \
+            | xcpretty --color --simple
+
+      # 8. Run unit tests (simulator)
+      - name: Test
+        run: |
+          xcodebuild test \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -destination "platform=iOS Simulator,name=iPhone 15,OS=latest" \
+            -derivedDataPath "$DERIVED_DATA" \
+            CODE_SIGNING_ALLOWED=NO \
+            | xcpretty --color --simple
+        continue-on-error: true   # don't fail CI if no tests exist yet
+
+      # ── Signing & Distribution steps (only on push to main) ──────────────
+
+      # 9. Install Fastlane match certificates
+      - name: Install signing certificates (match)
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        env:
+          MATCH_GIT_URL:           ${{ secrets.MATCH_GIT_URL }}
+          MATCH_PASSWORD:          ${{ secrets.MATCH_PASSWORD }}
+          MATCH_GIT_BASIC_AUTH:    ${{ secrets.MATCH_GIT_BASIC_AUTH }}
+          MATCH_KEYCHAIN_NAME:     gba_ci_keychain
+          MATCH_KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          gem install fastlane --no-document
+          fastlane match appstore \
+            --readonly true \
+            --keychain_name "$MATCH_KEYCHAIN_NAME" \
+            --keychain_password "$MATCH_KEYCHAIN_PASSWORD"
+
+      # 10. Archive
+      - name: Archive
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          mkdir -p build
+          xcodebuild archive \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration "$CONFIGURATION" \
+            -destination "$PLATFORM" \
+            -archivePath "$ARCHIVE_PATH" \
+            -derivedDataPath "$DERIVED_DATA" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            CODE_SIGN_STYLE=Manual \
+            | xcpretty --color --simple
+
+      # 11. Export IPA
+      - name: Export IPA
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          xcodebuild -exportArchive \
+            -archivePath "$ARCHIVE_PATH" \
+            -exportPath  "$EXPORT_PATH" \
+            -exportOptionsPlist "$EXPORT_OPTIONS" \
+            | xcpretty --color --simple
+
+      # 12. Upload to TestFlight
+      - name: Upload to TestFlight
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        env:
+          APP_STORE_CONNECT_API_KEY:    ${{ secrets.APP_STORE_CONNECT_API_KEY }}
+          APP_STORE_CONNECT_KEY_ID:     ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER:     ${{ secrets.APP_STORE_CONNECT_ISSUER }}
+        run: |
+          # Write the .p8 key to a temp file
+          echo "$APP_STORE_CONNECT_API_KEY" > /tmp/AuthKey.p8
+
+          xcrun altool --upload-app \
+            --type ios \
+            --file "$EXPORT_PATH/GBALinkEmulator.ipa" \
+            --apiKey  "$APP_STORE_CONNECT_KEY_ID" \
+            --apiIssuer "$APP_STORE_CONNECT_ISSUER" \
+            --verbose
+
+      # 13. Upload build artefacts (always)
+      - name: Upload IPA artifact
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: GBALinkEmulator-${{ github.sha }}
+          path: ${{ env.EXPORT_PATH }}/*.ipa
+          retention-days: 30
+
+      # 14. Upload dSYMs for crash symbolication
+      - name: Upload dSYMs
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: GBALinkEmulator-dSYMs-${{ github.sha }}
+          path: ${{ env.ARCHIVE_PATH }}/dSYMs
+          retention-days: 90
