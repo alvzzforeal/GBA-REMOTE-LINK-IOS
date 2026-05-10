@@ -11,7 +11,36 @@ typealias AudioCallback = ([Int16]) -> Void
 // MARK: - GBA Core Protocol
 
 protocol GBACoreProtocol: AnyObject {
-    func loadROM(at url: URL) throws
+    func loadROM(at url: URL) throws {
+    print("[GBAEmulatorCore] ════════════════════════════════════════")
+    print("[GBAEmulatorCore] LOADING ROM: \(url.lastPathComponent)")
+    print("[GBAEmulatorCore] Full path: \(url.path)")
+    print("[GBAEmulatorCore] ════════════════════════════════════════")
+    
+    let loadSuccess = bridge.loadROM(url.path)
+    
+    if !loadSuccess {
+        let errorMsg = bridge.lastErrorMessage.isEmpty
+            ? "Failed to load ROM at path: \(url.path)"
+            : bridge.lastErrorMessage
+
+        print("[GBAEmulatorCore] ❌ LOAD FAILED: \(errorMsg)")
+
+        throw NSError(
+            domain: "GBAEmulatorCore",
+            code: -1,
+            userInfo: [NSLocalizedDescriptionKey: errorMsg]
+        )
+    }
+    
+    print("[GBAEmulatorCore] ✅ ROM loaded successfully")
+    print("[GBAEmulatorCore] Core mode: \(bridge.coreModeDescription)")
+    print("[GBAEmulatorCore] Stub mode: \(bridge.isStubMode)")
+    print("[GBAEmulatorCore] ════════════════════════════════════════")
+    
+    setupAudio()
+    initializeFPSCounter()
+}
     func reset()
     func runFrame()
     func setKeys(_ mask: UInt16)
