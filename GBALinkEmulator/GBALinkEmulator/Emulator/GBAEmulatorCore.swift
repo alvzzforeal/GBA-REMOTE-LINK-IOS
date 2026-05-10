@@ -76,13 +76,20 @@ final class GBAEmulatorCore: GBACoreProtocol {
         print("[GBAEmulatorCore] ════════════════════════════════════════")
         
         let loadSuccess = bridge.loadROM(url.path)
-        
-        if !loadSuccess {
-            let errorMsg = nsError?.localizedDescription ?? bridge.lastErrorMessage
-            print("[GBAEmulatorCore] ❌ LOAD FAILED: \(errorMsg)")
-            throw nsError ?? NSError(domain: "GBAEmulatorCore", code: -1,
-                                    userInfo: [NSLocalizedDescriptionKey: errorMsg])
-        }
+
+if !loadSuccess {
+    let errorMsg = bridge.lastErrorMessage.isEmpty
+        ? "Failed to load ROM at path: \(url.path)"
+        : bridge.lastErrorMessage
+
+    print("[GBAEmulatorCore] ❌ LOAD FAILED: \(errorMsg)")
+
+    throw NSError(
+        domain: "GBAEmulatorCore",
+        code: -1,
+        userInfo: [NSLocalizedDescriptionKey: errorMsg]
+    )
+}
         
         print("[GBAEmulatorCore] ✅ ROM loaded successfully")
         print("[GBAEmulatorCore] Core mode: \(bridge.coreModeDescription)")
