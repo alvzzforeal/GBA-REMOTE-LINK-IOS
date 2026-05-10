@@ -37,7 +37,7 @@ jobs:
   # Cached by mGBA version tag so it only rebuilds on version bump.
   # ══════════════════════════════════════════════════════════════════
   build-mgba:
-    name: "Build mGBA ${{ env.MGBA_VERSION }} for iOS arm64"
+    name: "Build mGBA for iOS arm64"
     runs-on: macos-14          # Apple Silicon runner — faster iOS builds
 
     outputs:
