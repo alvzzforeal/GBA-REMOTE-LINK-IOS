@@ -194,16 +194,31 @@ jobs:
       #   Inline Python — no external script file needed.
       #   Injects: PBXFileReference, PBXBuildFile, Header/Library search
       #   paths, and Other Linker Flags: -lmgba -lz -lc++
+      - name: Find and verify project.pbxproj
+        run: |
+          echo "=== Workspace root ==="
+          ls -1
+          echo "=== All .xcodeproj dirs ==="
+          find . -maxdepth 3 -name "*.xcodeproj" | head -10
+          echo "=== All project.pbxproj files ==="
+          find . -maxdepth 4 -name "project.pbxproj" | head -10
+          PBXPROJ=$(find . -maxdepth 4 -name "project.pbxproj" | head -1)
+          if [ -z "$PBXPROJ" ]; then
+            echo "::error::project.pbxproj not found in repo!"
+            exit 1
+          fi
+          echo "Found: $PBXPROJ"
+          echo "PBXPROJ_PATH=$PBXPROJ" >> $GITHUB_ENV
+
       - name: Patch Xcode project for mGBA
         env:
-          PBXPROJ:  "${{ env.PROJECT }}/project.pbxproj"
           LIB_PATH: "${{ github.workspace }}/mgba-dist/lib/libmgba.a"
           INC_PATH: "${{ github.workspace }}/mgba-dist/include"
         run: |
           python3 <<'PYEOF'
           import os, re, uuid, sys
 
-          pbxproj  = os.environ["PBXPROJ"]
+          pbxproj  = os.environ["PBXPROJ_PATH"]
           lib_path = os.environ["LIB_PATH"]
           inc_path = os.environ["INC_PATH"]
           lib_dir  = lib_path.rsplit("/", 1)[0]
