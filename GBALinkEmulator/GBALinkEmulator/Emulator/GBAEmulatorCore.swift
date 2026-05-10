@@ -11,36 +11,7 @@ typealias AudioCallback = ([Int16]) -> Void
 // MARK: - GBA Core Protocol
 
 protocol GBACoreProtocol: AnyObject {
-    func loadROM(at url: URL) throws {
-    print("[GBAEmulatorCore] ════════════════════════════════════════")
-    print("[GBAEmulatorCore] LOADING ROM: \(url.lastPathComponent)")
-    print("[GBAEmulatorCore] Full path: \(url.path)")
-    print("[GBAEmulatorCore] ════════════════════════════════════════")
-    
-    let loadSuccess = bridge.loadROM(url.path)
-    
-    if !loadSuccess {
-        let errorMsg = bridge.lastErrorMessage.isEmpty
-            ? "Failed to load ROM at path: \(url.path)"
-            : bridge.lastErrorMessage
-
-        print("[GBAEmulatorCore] ❌ LOAD FAILED: \(errorMsg)")
-
-        throw NSError(
-            domain: "GBAEmulatorCore",
-            code: -1,
-            userInfo: [NSLocalizedDescriptionKey: errorMsg]
-        )
-    }
-    
-    print("[GBAEmulatorCore] ✅ ROM loaded successfully")
-    print("[GBAEmulatorCore] Core mode: \(bridge.coreModeDescription)")
-    print("[GBAEmulatorCore] Stub mode: \(bridge.isStubMode)")
-    print("[GBAEmulatorCore] ════════════════════════════════════════")
-    
-    setupAudio()
-    initializeFPSCounter()
-}
+    func loadROM(at url: URL) throws
     func reset()
     func runFrame()
     func setKeys(_ mask: UInt16)
@@ -75,13 +46,13 @@ final class GBAEmulatorCore: GBACoreProtocol {
     var coreModeDescription: String { bridge.coreModeDescription }
     var lastErrorMessage: String { bridge.lastErrorMessage }
     var renderedFrameCount: Int { Int(bridge.renderedFrameCount) }
-    
+
     private var displayLink: CADisplayLink?
     private var audioEngine: AVAudioEngine?
     private var audioPlayerNode: AVAudioPlayerNode?
     private var audioFormat: AVAudioFormat?
     private let audioSampleBuffer = UnsafeMutablePointer<Int16>.allocate(capacity: 8192)
-    
+
     // FPS diagnostics
     private var fpsStartTime: Date?
     private var fpsFrameCount = 0
@@ -103,28 +74,28 @@ final class GBAEmulatorCore: GBACoreProtocol {
         print("[GBAEmulatorCore] LOADING ROM: \(url.lastPathComponent)")
         print("[GBAEmulatorCore] Full path: \(url.path)")
         print("[GBAEmulatorCore] ════════════════════════════════════════")
-        
+
         let loadSuccess = bridge.loadROM(url.path)
 
-if !loadSuccess {
-    let errorMsg = bridge.lastErrorMessage.isEmpty
-        ? "Failed to load ROM at path: \(url.path)"
-        : bridge.lastErrorMessage
+        if !loadSuccess {
+            let errorMsg = bridge.lastErrorMessage.isEmpty
+                ? "Failed to load ROM at path: \(url.path)"
+                : bridge.lastErrorMessage
 
-    print("[GBAEmulatorCore] ❌ LOAD FAILED: \(errorMsg)")
+            print("[GBAEmulatorCore] ❌ LOAD FAILED: \(errorMsg)")
 
-    throw NSError(
-        domain: "GBAEmulatorCore",
-        code: -1,
-        userInfo: [NSLocalizedDescriptionKey: errorMsg]
-    )
-}
-        
+            throw NSError(
+                domain: "GBAEmulatorCore",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: errorMsg]
+            )
+        }
+
         print("[GBAEmulatorCore] ✅ ROM loaded successfully")
         print("[GBAEmulatorCore] Core mode: \(bridge.coreModeDescription)")
         print("[GBAEmulatorCore] Stub mode: \(bridge.isStubMode)")
         print("[GBAEmulatorCore] ════════════════════════════════════════")
-        
+
         setupAudio()
         initializeFPSCounter()
     }
@@ -150,10 +121,10 @@ if !loadSuccess {
     /// Run exactly one GBA frame; called by CADisplayLink on main thread.
     func runFrame() {
         guard isRunning else { return }
-        
+
         bridge.runFrame()
         updateFPSCounter()
-        
+
         let image = makeImage()
         frameCallback?(image)
         drainAndScheduleAudio()
@@ -216,13 +187,13 @@ if !loadSuccess {
 
     private func updateFPSCounter() {
         fpsFrameCount += 1
-        
+
         guard let startTime = fpsStartTime else { return }
         let elapsed = Date().timeIntervalSince(startTime)
-        
+
         if elapsed >= 1.0 {
             currentFPS = Double(fpsFrameCount) / elapsed
-            print(String(format: "[GBAEmulatorCore] FPS: %.2f (frames: %d)", 
+            print(String(format: "[GBAEmulatorCore] FPS: %.2f (frames: %d)",
                         currentFPS, fpsFrameCount))
             fpsStartTime = Date()
             fpsFrameCount = 0
@@ -234,7 +205,7 @@ if !loadSuccess {
     private func setupAudio() {
         let engine     = AVAudioEngine()
         let playerNode = AVAudioPlayerNode()
-        
+
         // GBA outputs 32768 Hz stereo via mGBA's blip_buf resampler
         guard let format = AVAudioFormat(
             commonFormat: .pcmFormatInt16,
