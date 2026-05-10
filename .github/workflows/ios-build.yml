@@ -1,77 +1,342 @@
-name: iOS Build IPA
+name: Build GBALinkEmulator with real mGBA
 
+# ────────────────────────────────────────────────────────────────
+# Triggers
+# ────────────────────────────────────────────────────────────────
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main, master ]
   pull_request:
-    branches: [ main ]
-  workflow_dispatch:
+    branches: [ main, master ]
+  workflow_dispatch:        # manual trigger from GitHub UI
 
+# ────────────────────────────────────────────────────────────────
+# Top-level env vars (edit these to match your project)
+# ────────────────────────────────────────────────────────────────
 env:
-  SCHEME: GBALinkEmulator
-  PROJECT: GBALinkEmulator/GBALinkEmulator.xcodeproj
-  CONFIGURATION: Release
-  PLATFORM: "generic/platform=iOS"
-  DERIVED_DATA: ${{ github.workspace }}/DerivedData
+  # ---------- mGBA ---------------------------------------------------
+  MGBA_VERSION: "0.10.3"          # tag to checkout from mgba-emu/mgba
+  MGBA_REPO:    "mgba-emu/mgba"
+
+  # ---------- Xcode project ------------------------------------------
+  SCHEME:       "GBALinkEmulator"
+  PROJECT:      "GBALinkEmulator.xcodeproj"
+  BUNDLE_ID:    "com.guizinho.GBALinkEmulator"
+
+  # ---------- Signing (leave blank for unsigned / simulator builds) ---
+  # To sign for a real device, add these as GitHub Secrets:
+  #   APPLE_CERTIFICATE_BASE64   – base64 of your .p12
+  #   APPLE_CERTIFICATE_PASSWORD – p12 password
+  #   APPLE_PROVISIONING_PROFILE – base64 of your .mobileprovision
+  #   APPLE_TEAM_ID              – 10-char team ID
+  SIGN_BUILD: ${{ secrets.APPLE_CERTIFICATE_BASE64 != '' }}
 
 jobs:
-  build:
-    name: Build IPA
-    runs-on: macos-14
-    timeout-minutes: 60
+  # ══════════════════════════════════════════════════════════════════
+  # JOB 1 — Build libmgba.a for iOS arm64
+  # Cached by mGBA version tag so it only rebuilds on version bump.
+  # ══════════════════════════════════════════════════════════════════
+  build-mgba:
+    name: "Build mGBA ${{ env.MGBA_VERSION }} for iOS arm64"
+    runs-on: macos-14          # Apple Silicon runner — faster iOS builds
+
+    outputs:
+      cache-hit: ${{ steps.cache-mgba.outputs.cache-hit }}
 
     steps:
-      - name: Checkout
+      # ── 1. Restore cache ───────────────────────────────────────────
+      - name: Restore mGBA build cache
+        id: cache-mgba
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/mgba-dist
+          key: mgba-ios-arm64-${{ env.MGBA_VERSION }}-v3
+
+      # ── 2. Install build tools (only when cache misses) ────────────
+      - name: Install CMake + Ninja
+        if: steps.cache-mgba.outputs.cache-hit != 'true'
+        run: brew install cmake ninja
+
+      # ── 3. Checkout mGBA source ────────────────────────────────────
+      - name: Checkout mGBA ${{ env.MGBA_VERSION }}
+        if: steps.cache-mgba.outputs.cache-hit != 'true'
         uses: actions/checkout@v4
+        with:
+          repository: ${{ env.MGBA_REPO }}
+          ref:        "refs/tags/${{ env.MGBA_VERSION }}"
+          path:       mgba-src
+          submodules: recursive
 
-      - name: Select Xcode 15.4
+      # ── 4. Patch mGBA CMakeLists for a minimal iOS static build ────
+      #   We disable everything that requires non-iOS APIs or extra
+      #   dependencies (OpenGL, SDL, Qt, libzip, SQLite, …).
+      - name: Patch mGBA for minimal iOS build
+        if: steps.cache-mgba.outputs.cache-hit != 'true'
         run: |
-          sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
-          xcodebuild -version
+          cd mgba-src
 
-      - name: Install xcpretty
-        run: gem install xcpretty --no-document 2>/dev/null || true
+          # Silence unavailable-function warnings that become errors on iOS
+          cat >> CMakeLists.txt <<'PATCH'
 
-      - name: Verify project structure
+          # ── iOS CI patch (appended by workflow) ──
+          if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+            add_compile_options(-Wno-error -Wno-deprecated-declarations)
+          endif()
+          PATCH
+
+      # ── 5. Configure for iOS arm64 device ─────────────────────────
+      - name: CMake configure — iOS arm64 device
+        if: steps.cache-mgba.outputs.cache-hit != 'true'
         run: |
-          echo "=== Project file ==="
-          ls -la "$PROJECT"
-          echo "=== project.pbxproj ==="
-          ls -la "$PROJECT/project.pbxproj"
-          echo "=== Source files ==="
-          find GBALinkEmulator/GBALinkEmulator -type f | sort
+          IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          cmake -S mgba-src -B build-ios-arm64 \
+            -GNinja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT="${IOS_SDK}" \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 \
+            -DBUILD_SHARED=OFF \
+            -DBUILD_STATIC=ON \
+            -DBUILD_LIBRETRO=OFF \
+            -DBUILD_SDL=OFF \
+            -DBUILD_QT=OFF \
+            -DENABLE_FILESYSTEM=OFF \
+            -DENABLE_VFS_ZIP=OFF \
+            -DENABLE_DISCORD_RPC=OFF \
+            -DENABLE_DEBUGGERS=OFF \
+            -DUSE_SQLITE3=OFF \
+            -DUSE_ZLIB=ON \
+            -DUSE_MINIZIP=OFF \
+            -DUSE_LIBZIP=OFF \
+            -DUSE_ELF=OFF \
+            -DUSE_PNG=OFF \
+            -DUSE_FFMPEG=OFF \
+            -DUSE_EDITLINE=OFF \
+            -DUSE_LZMA=OFF \
+            -DCMAKE_C_FLAGS="-fembed-bitcode=off" \
+            -DCMAKE_CXX_FLAGS="-fembed-bitcode=off"
 
-      - name: Build
+      # ── 6. Build ───────────────────────────────────────────────────
+      - name: Build libmgba (iOS arm64)
+        if: steps.cache-mgba.outputs.cache-hit != 'true'
         run: |
-          set -o pipefail
-          xcodebuild build \
-            -project "$PROJECT" \
-            -scheme "$SCHEME" \
-            -configuration "$CONFIGURATION" \
-            -destination "$PLATFORM" \
-            -derivedDataPath "$DERIVED_DATA" \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-          2>&1 | xcpretty --color --simple
+          cmake --build build-ios-arm64 --target mgba --parallel $(sysctl -n hw.logicalcpu)
 
-      - name: Create IPA
+      # ── 7. Collect outputs into a clean dist directory ─────────────
+      - name: Collect mGBA dist (lib + headers)
+        if: steps.cache-mgba.outputs.cache-hit != 'true'
         run: |
-          mkdir -p Payload
-          APP_PATH=$(find "$DERIVED_DATA/Build/Products/Release-iphoneos" -name "*.app" | head -n 1)
+          DIST="${{ github.workspace }}/mgba-dist"
+          mkdir -p "$DIST/lib" "$DIST/include"
 
-          if [ -z "$APP_PATH" ]; then
-            echo "No .app found"
-            find "$DERIVED_DATA/Build/Products" -maxdepth 4 -type d
+          # Library — the static lib can be named libmgba.a or libmgba-static.a
+          LIB=$(find build-ios-arm64 -name "libmgba*.a" | head -1)
+          if [ -z "$LIB" ]; then
+            echo "ERROR: libmgba.a not found after build"
+            find build-ios-arm64 -name "*.a" | head -20
             exit 1
           fi
+          cp "$LIB" "$DIST/lib/libmgba.a"
+          echo "Copied: $LIB → $DIST/lib/libmgba.a"
+          ls -lh "$DIST/lib/"
 
-          echo "Found app at: $APP_PATH"
-          cp -R "$APP_PATH" Payload/
-          zip -r GBALinkEmulator.ipa Payload
+          # Headers — copy the include/ tree from mGBA source
+          cp -r mgba-src/include/. "$DIST/include/"
+          # Also copy internal headers that GBACoreBridge.m needs
+          mkdir -p "$DIST/include/mgba/internal/gba"
+          cp mgba-src/src/gba/gba.h "$DIST/include/mgba/internal/gba/gba.h" 2>/dev/null || true
 
+          echo "Header tree:"
+          find "$DIST/include" -name "*.h" | head -30
+
+      # ── 8. Verify it's arm64 ───────────────────────────────────────
+      - name: Verify libmgba.a architecture
+        run: |
+          lipo -info "${{ github.workspace }}/mgba-dist/lib/libmgba.a"
+
+      # ── 9. Upload as artifact so the next job can download it ──────
+      - name: Upload mGBA dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: mgba-ios-arm64
+          path: ${{ github.workspace }}/mgba-dist
+          retention-days: 30
+
+  # ══════════════════════════════════════════════════════════════════
+  # JOB 2 — Patch project, build app, produce IPA
+  # ══════════════════════════════════════════════════════════════════
+  build-app:
+    name: "Build GBALinkEmulator IPA"
+    runs-on: macos-14
+    needs: build-mgba
+
+    steps:
+      # ── 1. Checkout your app source ────────────────────────────────
+      - name: Checkout app source
+        uses: actions/checkout@v4
+
+      # ── 2. Download the mGBA dist from job 1 ──────────────────────
+      - name: Download mGBA dist
+        uses: actions/download-artifact@v4
+        with:
+          name: mgba-ios-arm64
+          path: mgba-dist
+
+      - name: Verify download
+        run: |
+          echo "=== mGBA dist contents ==="
+          find mgba-dist -type f | head -30
+          lipo -info mgba-dist/lib/libmgba.a
+
+      # ── 3. Patch the Xcode project with libmgba.a ──────────────────
+      #   Uses the Python script in scripts/patch_pbxproj.py.
+      #   This injects:
+      #     • A PBXFileReference for libmgba.a
+      #     • A PBXBuildFile linking it
+      #     • Header Search Paths for mgba-dist/include
+      #     • Library Search Paths for mgba-dist/lib
+      #     • Other Linker Flags: -lmgba -lz -lc++
+      - name: Patch Xcode project for mGBA
+        run: |
+          python3 scripts/patch_pbxproj.py \
+            --pbxproj   "${{ env.PROJECT }}/project.pbxproj" \
+            --lib-path  "${{ github.workspace }}/mgba-dist/lib/libmgba.a" \
+            --inc-path  "${{ github.workspace }}/mgba-dist/include"
+
+      # ── 4. Select Xcode version ────────────────────────────────────
+      - name: Select Xcode 15
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
+
+      # ── 5. Import signing credentials (if secrets are set) ─────────
+      - name: Import signing certificate
+        if: env.SIGN_BUILD == 'true'
+        env:
+          CERT_B64:    ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          CERT_PASS:   ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          PROFILE_B64: ${{ secrets.APPLE_PROVISIONING_PROFILE }}
+        run: |
+          # Create temp keychain
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          KEYCHAIN_PASS="gba-ci-$(date +%s)"
+          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+
+          # Install certificate
+          echo "$CERT_B64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$CERT_PASS" \
+            -T /usr/bin/codesign
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list \
+            -S apple-tool:,apple: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+
+          # Install provisioning profile
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          echo "$PROFILE_B64" | base64 --decode > \
+            ~/Library/MobileDevice/Provisioning\ Profiles/GBALinkEmulator.mobileprovision
+
+      # ── 6. Build archive ───────────────────────────────────────────
+      - name: Build Xcode archive
+        run: |
+          ARCHIVE_PATH="$RUNNER_TEMP/GBALinkEmulator.xcarchive"
+
+          if [ "${{ env.SIGN_BUILD }}" = "true" ]; then
+            SIGN_ARGS="CODE_SIGN_STYLE=Manual \
+              DEVELOPMENT_TEAM=${{ secrets.APPLE_TEAM_ID }} \
+              PROVISIONING_PROFILE_SPECIFIER=GBALinkEmulator"
+          else
+            # Unsigned build for CI verification (not installable, but proves compilation)
+            SIGN_ARGS="CODE_SIGNING_ALLOWED=NO \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGN_IDENTITY=\"\" \
+              AD_HOC_CODE_SIGNING_ALLOWED=YES"
+          fi
+
+          xcodebuild archive \
+            -project "${{ env.PROJECT }}" \
+            -scheme "${{ env.SCHEME }}" \
+            -sdk iphoneos \
+            -configuration Release \
+            -archivePath "$ARCHIVE_PATH" \
+            SKIP_INSTALL=NO \
+            BUILD_LIBRARY_FOR_DISTRIBUTION=NO \
+            $SIGN_ARGS \
+            | tee build.log \
+            | xcpretty --color || {
+              echo "::error::xcodebuild failed — last 100 lines of build.log:"
+              tail -100 build.log
+              exit 1
+            }
+
+          echo "ARCHIVE_PATH=$ARCHIVE_PATH" >> $GITHUB_ENV
+
+      # ── 7. Export IPA ──────────────────────────────────────────────
+      - name: Export IPA
+        run: |
+          IPA_DIR="$RUNNER_TEMP/ipa"
+          mkdir -p "$IPA_DIR"
+
+          if [ "${{ env.SIGN_BUILD }}" = "true" ]; then
+            xcodebuild -exportArchive \
+              -archivePath "$ARCHIVE_PATH" \
+              -exportPath   "$IPA_DIR" \
+              -exportOptionsPlist scripts/ExportOptions-signed.plist
+          else
+            # Unsigned export — wraps the .app into a distributable IPA
+            # (useful for AltStore / Sideloadly / TrollStore workflows)
+            xcodebuild -exportArchive \
+              -archivePath "$ARCHIVE_PATH" \
+              -exportPath   "$IPA_DIR" \
+              -exportOptionsPlist scripts/ExportOptions-unsigned.plist
+          fi
+
+          echo "IPA_DIR=$IPA_DIR" >> $GITHUB_ENV
+          ls -lh "$IPA_DIR/"
+
+      # ── 8. Confirm mGBA is NOT in stub mode ────────────────────────
+      #   If the build succeeded with real mGBA, MGBA_AVAILABLE=1 in the
+      #   compiled binary. We check the .app binary for the stub log string.
+      - name: Verify mGBA is real (not stub)
+        run: |
+          APP=$(find "$ARCHIVE_PATH" -name "*.app" | head -1)
+          BINARY="$APP/GBALinkEmulator"
+          echo "Checking binary: $BINARY"
+
+          if strings "$BINARY" | grep -q "STUB – mGBA not linked"; then
+            echo "::error::Build contains stub mode string! mGBA was NOT linked correctly."
+            exit 1
+          else
+            echo "✅ Stub string not found — mGBA linked as real library."
+          fi
+
+          if strings "$BINARY" | grep -qE "mCoreCreate|mCoreLoadFile"; then
+            echo "✅ mGBA API symbols found in binary."
+          else
+            echo "⚠️  mGBA API symbols not visible (may be optimised out — acceptable for Release)."
+          fi
+
+      # ── 9. Upload IPA as artifact ──────────────────────────────────
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: GBALinkEmulator-IPA
-          path: GBALinkEmulator.ipa
+          path: ${{ env.IPA_DIR }}/*.ipa
+          retention-days: 30
+
+      # ── 10. Upload build log on failure ───────────────────────────
+      - name: Upload build log (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          retention-days: 7
+
+      # ── 11. Clean up keychain ─────────────────────────────────────
+      - name: Clean up keychain
+        if: always() && env.SIGN_BUILD == 'true'
+        run: |
+          security delete-keychain "$RUNNER_TEMP/app-signing.keychain-db" || true
