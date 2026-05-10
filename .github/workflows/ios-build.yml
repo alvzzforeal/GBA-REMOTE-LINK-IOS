@@ -1,0 +1,168 @@
+name: Build GBALinkEmulator IPA with real mGBA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+env:
+  MGBA_VERSION: "0.10.3"
+  MGBA_REPO: "mgba-emu/mgba"
+  SCHEME: "GBALinkEmulator"
+  PROJECT: "GBALinkEmulator/GBALinkEmulator.xcodeproj"
+  CONFIGURATION: "Release"
+  DERIVED_DATA: ${{ github.workspace }}/DerivedData
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout app
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer || true
+          xcodebuild -version
+
+      - name: Verify app project exists
+        run: |
+          echo "Workspace: $PWD"
+          find . -maxdepth 4 -name "*.xcodeproj" -print
+          test -f "$PROJECT/project.pbxproj"
+
+      - name: Restore mGBA cache
+        id: cache-mgba
+        uses: actions/cache@v4
+        with:
+          path: mgba-dist
+          key: mgba-ios-arm64-${{ env.MGBA_VERSION }}-v6
+
+      - name: Install build tools
+        if: steps.cache-mgba.outputs.cache-hit != 'true'
+        run: brew install cmake ninja
+
+      - name: Checkout mGBA
+        if: steps.cache-mgba.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: mgba-emu/mgba
+          ref: "refs/tags/0.10.3"
+          path: mgba-src
+          submodules: recursive
+
+      - name: Build mGBA static library for iOS arm64
+        if: steps.cache-mgba.outputs.cache-hit != 'true'
+        run: |
+          IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          cmake -S mgba-src -B build-ios-arm64 \
+            -GNinja \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT="$IOS_SDK" \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 \
+            -DBUILD_SHARED=OFF \
+            -DBUILD_STATIC=ON \
+            -DBUILD_LIBRETRO=OFF \
+            -DBUILD_SDL=OFF \
+            -DBUILD_QT=OFF \
+            -DENABLE_FILESYSTEM=OFF \
+            -DENABLE_VFS_ZIP=OFF \
+            -DENABLE_DISCORD_RPC=OFF \
+            -DENABLE_DEBUGGERS=OFF \
+            -DUSE_SQLITE3=OFF \
+            -DUSE_ZLIB=ON \
+            -DUSE_MINIZIP=OFF \
+            -DUSE_LIBZIP=OFF \
+            -DUSE_ELF=OFF \
+            -DUSE_PNG=OFF \
+            -DUSE_FFMPEG=OFF \
+            -DUSE_EDITLINE=OFF \
+            -DUSE_LZMA=OFF \
+            -DCMAKE_C_FLAGS="-Wno-error -Wno-deprecated-declarations -fembed-bitcode=off" \
+            -DCMAKE_CXX_FLAGS="-Wno-error -Wno-deprecated-declarations -fembed-bitcode=off"
+
+          cmake --build build-ios-arm64 --parallel $(sysctl -n hw.logicalcpu)
+
+      - name: Collect mGBA files
+        if: steps.cache-mgba.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p mgba-dist/lib mgba-dist/include
+          LIB=$(find build-ios-arm64 -name "libmgba*.a" | head -1)
+          if [ -z "$LIB" ]; then
+            echo "No libmgba*.a found"
+            find build-ios-arm64 -name "*.a" -print
+            exit 1
+          fi
+          cp "$LIB" mgba-dist/lib/libmgba.a
+          cp -R mgba-src/include/. mgba-dist/include/
+          mkdir -p mgba-dist/include/mgba/internal/gba
+          cp mgba-src/src/gba/gba.h mgba-dist/include/mgba/internal/gba/gba.h 2>/dev/null || true
+          find mgba-dist -maxdepth 5 -type f | head -40
+
+      - name: Verify mGBA header and library
+        run: |
+          test -f mgba-dist/include/mgba/core/core.h
+          test -f mgba-dist/lib/libmgba.a
+          lipo -info mgba-dist/lib/libmgba.a
+
+      - name: Build app with mGBA headers and library
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration "$CONFIGURATION" \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath "$DERIVED_DATA" \
+            HEADER_SEARCH_PATHS="$(pwd)/mgba-dist/include $(pwd)/mgba-dist/include/mgba $(inherited)" \
+            LIBRARY_SEARCH_PATHS="$(pwd)/mgba-dist/lib $(inherited)" \
+            OTHER_LDFLAGS="-lmgba -lz -lc++ $(inherited)" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+          2>&1 | tee build.log
+
+      - name: Verify binary is not STUB mode
+        run: |
+          APP_PATH=$(find "$DERIVED_DATA/Build/Products/Release-iphoneos" -name "*.app" | head -1)
+          if [ -z "$APP_PATH" ]; then
+            echo "No .app found"
+            find "$DERIVED_DATA/Build/Products" -maxdepth 4 -type d
+            exit 1
+          fi
+          BIN="$APP_PATH/GBALinkEmulator"
+          echo "Checking $BIN"
+          if strings "$BIN" | grep -q "STUB MODE - mGBA not linked"; then
+            echo "::error::The app was compiled in STUB MODE. mGBA headers were not detected."
+            exit 1
+          fi
+          echo "✅ STUB string not found. App was compiled with real mGBA path."
+
+      - name: Create IPA
+        run: |
+          IPA_DIR="$RUNNER_TEMP/ipa"
+          mkdir -p "$IPA_DIR" Payload
+          APP_PATH=$(find "$DERIVED_DATA/Build/Products/Release-iphoneos" -name "*.app" | head -1)
+          cp -R "$APP_PATH" Payload/
+          zip -r "$IPA_DIR/GBALinkEmulator.ipa" Payload
+          echo "IPA_DIR=$IPA_DIR" >> $GITHUB_ENV
+          ls -lh "$IPA_DIR"
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: GBALinkEmulator-IPA
+          path: ${{ env.IPA_DIR }}/*.ipa
+
+      - name: Upload build log if failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
