@@ -363,18 +363,38 @@ jobs:
           mkdir -p "$IPA_DIR"
 
           if [ "${{ env.SIGN_BUILD }}" = "true" ]; then
-            xcodebuild -exportArchive \
-              -archivePath "$ARCHIVE_PATH" \
-              -exportPath   "$IPA_DIR" \
-              -exportOptionsPlist scripts/ExportOptions-signed.plist
+            cat > "$RUNNER_TEMP/ExportOptions.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>method</key>              <string>ad-hoc</string>
+  <key>teamID</key>              <string>${{ secrets.APPLE_TEAM_ID }}</string>
+  <key>stripSwiftSymbols</key>   <true/>
+  <key>compileBitcode</key>      <false/>
+</dict>
+</plist>
+PLIST
           else
-            # Unsigned export — wraps the .app into a distributable IPA
-            # (useful for AltStore / Sideloadly / TrollStore workflows)
-            xcodebuild -exportArchive \
-              -archivePath "$ARCHIVE_PATH" \
-              -exportPath   "$IPA_DIR" \
-              -exportOptionsPlist scripts/ExportOptions-unsigned.plist
+            # Unsigned — method=debugging lets xcodebuild wrap the .app without a profile
+            cat > "$RUNNER_TEMP/ExportOptions.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>method</key>            <string>debugging</string>
+  <key>compileBitcode</key>    <false/>
+  <key>signingStyle</key>      <string>manual</string>
+  <key>stripSwiftSymbols</key> <true/>
+</dict>
+</plist>
+PLIST
           fi
+
+          xcodebuild -exportArchive \
+            -archivePath "$ARCHIVE_PATH" \
+            -exportPath   "$IPA_DIR" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist"
 
           echo "IPA_DIR=$IPA_DIR" >> $GITHUB_ENV
           ls -lh "$IPA_DIR/"
