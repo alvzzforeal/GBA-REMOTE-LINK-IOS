@@ -75,8 +75,7 @@ final class GBAEmulatorCore: GBACoreProtocol {
         print("[GBAEmulatorCore] Full path: \(url.path)")
         print("[GBAEmulatorCore] ════════════════════════════════════════")
         
-        var nsError: NSError?
-        let loadSuccess = bridge.loadROM(url.path, error: &nsError)
+        let loadSuccess = bridge.loadROM(url.path)
         
         if !loadSuccess {
             let errorMsg = nsError?.localizedDescription ?? bridge.lastErrorMessage
