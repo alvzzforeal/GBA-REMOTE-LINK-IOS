@@ -209,6 +209,8 @@ jobs:
           fi
           echo "Found: $PBXPROJ"
           echo "PBXPROJ_PATH=$PBXPROJ" >> $GITHUB_ENV
+          PROJECT_DIR=$(dirname "$PBXPROJ")
+          echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
 
       - name: Patch Xcode project for mGBA
         env:
@@ -321,25 +323,22 @@ jobs:
           echo "$PROFILE_B64" | base64 --decode > \
             ~/Library/MobileDevice/Provisioning\ Profiles/GBALinkEmulator.mobileprovision
 
-      # ── 6. Build archive ───────────────────────────────────────────
+      # ── 6. Build archive ───────────────────────────────────────────────
       - name: Build Xcode archive
         run: |
+          # Set ARCHIVE_PATH before the pipe so subshell cannot lose it
           ARCHIVE_PATH="$RUNNER_TEMP/GBALinkEmulator.xcarchive"
+          echo "ARCHIVE_PATH=$ARCHIVE_PATH" >> $GITHUB_ENV
 
           if [ "${{ env.SIGN_BUILD }}" = "true" ]; then
-            SIGN_ARGS="CODE_SIGN_STYLE=Manual \
-              DEVELOPMENT_TEAM=${{ secrets.APPLE_TEAM_ID }} \
-              PROVISIONING_PROFILE_SPECIFIER=GBALinkEmulator"
+            SIGN_ARGS="CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=${{ secrets.APPLE_TEAM_ID }} PROVISIONING_PROFILE_SPECIFIER=GBALinkEmulator"
           else
-            # Unsigned build for CI verification (not installable, but proves compilation)
-            SIGN_ARGS="CODE_SIGNING_ALLOWED=NO \
-              CODE_SIGNING_REQUIRED=NO \
-              CODE_SIGN_IDENTITY=\"\" \
-              AD_HOC_CODE_SIGNING_ALLOWED=YES"
+            SIGN_ARGS="CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= AD_HOC_CODE_SIGNING_ALLOWED=YES"
           fi
 
+          set -o pipefail
           xcodebuild archive \
-            -project "${{ env.PROJECT }}" \
+            -project "${{ env.PROJECT_DIR }}" \
             -scheme "${{ env.SCHEME }}" \
             -sdk iphoneos \
             -configuration Release \
@@ -347,14 +346,11 @@ jobs:
             SKIP_INSTALL=NO \
             BUILD_LIBRARY_FOR_DISTRIBUTION=NO \
             $SIGN_ARGS \
-            | tee build.log \
-            | xcpretty --color || {
+            2>&1 | tee build.log || {
               echo "::error::xcodebuild failed — last 100 lines of build.log:"
               tail -100 build.log
               exit 1
             }
-
-          echo "ARCHIVE_PATH=$ARCHIVE_PATH" >> $GITHUB_ENV
 
       # ── 7a. Write ExportOptions.plist ─────────────────────────────
       - name: Write ExportOptions.plist (signed)
