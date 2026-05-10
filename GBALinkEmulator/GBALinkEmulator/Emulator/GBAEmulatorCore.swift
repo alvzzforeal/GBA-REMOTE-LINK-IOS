@@ -75,12 +75,13 @@ final class GBAEmulatorCore: GBACoreProtocol {
         print("[GBAEmulatorCore] Full path: \(url.path)")
         print("[GBAEmulatorCore] ════════════════════════════════════════")
 
-        let loadSuccess = bridge.loadROM(url.path)
-
-        if !loadSuccess {
-            let errorMsg = bridge.lastErrorMessage.isEmpty
-                ? "Failed to load ROM at path: \(url.path)"
-                : bridge.lastErrorMessage
+        do {
+            // GBACoreBridge.loadROM is imported into Swift as a throwing Void method.
+            // If it returns without throwing, the ROM loaded successfully.
+            try bridge.loadROM(url.path)
+        } catch {
+            let bridgeError = bridge.lastErrorMessage
+            let errorMsg = bridgeError.isEmpty ? error.localizedDescription : bridgeError
 
             print("[GBAEmulatorCore] ❌ LOAD FAILED: \(errorMsg)")
 
