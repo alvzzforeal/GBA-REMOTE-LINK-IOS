@@ -352,10 +352,28 @@ jobs:
               exit 1
             }
 
-      # ── 7a. Write ExportOptions.plist ─────────────────────────────
-      - name: Write ExportOptions.plist (signed)
+      # ── 7. Package IPA manually ────────────────────────────────────
+      #   xcodebuild -exportArchive requires a signing team even for
+      #   unsigned builds. Instead we zip the .app directly — this is
+      #   exactly what AltStore / Sideloadly / TrollStore expect.
+      - name: Package IPA (unsigned)
+        if: env.SIGN_BUILD != 'true'
+        run: |
+          IPA_DIR="$RUNNER_TEMP/ipa"
+          mkdir -p "$IPA_DIR/Payload"
+          APP=$(find "$ARCHIVE_PATH" -name "*.app" | head -1)
+          cp -r "$APP" "$IPA_DIR/Payload/"
+          cd "$IPA_DIR"
+          zip -qr "GBALinkEmulator.ipa" Payload/
+          rm -rf Payload/
+          echo "IPA_DIR=$IPA_DIR" >> $GITHUB_ENV
+          ls -lh "$IPA_DIR/"
+
+      - name: Package IPA (signed)
         if: env.SIGN_BUILD == 'true'
         run: |
+          IPA_DIR="$RUNNER_TEMP/ipa"
+          mkdir -p "$IPA_DIR"
           printf '%s' '<?xml version="1.0" encoding="UTF-8"?>' > "$RUNNER_TEMP/ExportOptions.plist"
           printf '%s' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' >> "$RUNNER_TEMP/ExportOptions.plist"
           printf '%s' '<plist version="1.0"><dict>' >> "$RUNNER_TEMP/ExportOptions.plist"
@@ -364,30 +382,10 @@ jobs:
           printf '%s' '<key>stripSwiftSymbols</key><true/>' >> "$RUNNER_TEMP/ExportOptions.plist"
           printf '%s' '<key>compileBitcode</key><false/>' >> "$RUNNER_TEMP/ExportOptions.plist"
           printf '%s' '</dict></plist>' >> "$RUNNER_TEMP/ExportOptions.plist"
-
-      - name: Write ExportOptions.plist (unsigned)
-        if: env.SIGN_BUILD != 'true'
-        run: |
-          printf '%s' '<?xml version="1.0" encoding="UTF-8"?>' > "$RUNNER_TEMP/ExportOptions.plist"
-          printf '%s' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' >> "$RUNNER_TEMP/ExportOptions.plist"
-          printf '%s' '<plist version="1.0"><dict>' >> "$RUNNER_TEMP/ExportOptions.plist"
-          printf '%s' '<key>method</key><string>debugging</string>' >> "$RUNNER_TEMP/ExportOptions.plist"
-          printf '%s' '<key>compileBitcode</key><false/>' >> "$RUNNER_TEMP/ExportOptions.plist"
-          printf '%s' '<key>signingStyle</key><string>manual</string>' >> "$RUNNER_TEMP/ExportOptions.plist"
-          printf '%s' '<key>stripSwiftSymbols</key><true/>' >> "$RUNNER_TEMP/ExportOptions.plist"
-          printf '%s' '</dict></plist>' >> "$RUNNER_TEMP/ExportOptions.plist"
-
-      # ── 7b. Export IPA ─────────────────────────────────────────────
-      - name: Export IPA
-        run: |
-          IPA_DIR="$RUNNER_TEMP/ipa"
-          mkdir -p "$IPA_DIR"
-
           xcodebuild -exportArchive \
             -archivePath "$ARCHIVE_PATH" \
             -exportPath   "$IPA_DIR" \
             -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist"
-
           echo "IPA_DIR=$IPA_DIR" >> $GITHUB_ENV
           ls -lh "$IPA_DIR/"
 
