@@ -1,4 +1,4 @@
-name: iOS Build & Archive
+name: iOS Build IPA
 
 on:
   push:
@@ -8,20 +8,19 @@ on:
   workflow_dispatch:
 
 env:
-  SCHEME:        GBALinkEmulator
-  PROJECT:       GBALinkEmulator/GBALinkEmulator.xcodeproj
+  SCHEME: GBALinkEmulator
+  PROJECT: GBALinkEmulator/GBALinkEmulator.xcodeproj
   CONFIGURATION: Release
-  PLATFORM:      "generic/platform=iOS"
-  DERIVED_DATA:  ${{ github.workspace }}/DerivedData
+  PLATFORM: "generic/platform=iOS"
+  DERIVED_DATA: ${{ github.workspace }}/DerivedData
 
 jobs:
   build:
-    name: Build (compile check)
+    name: Build IPA
     runs-on: macos-14
     timeout-minutes: 60
 
     steps:
-
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -46,12 +45,33 @@ jobs:
         run: |
           set -o pipefail
           xcodebuild build \
-            -project       "$PROJECT" \
-            -scheme        "$SCHEME"  \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
             -configuration "$CONFIGURATION" \
-            -destination   "$PLATFORM" \
+            -destination "$PLATFORM" \
             -derivedDataPath "$DERIVED_DATA" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
           2>&1 | xcpretty --color --simple
+
+      - name: Create IPA
+        run: |
+          mkdir -p Payload
+          APP_PATH=$(find "$DERIVED_DATA/Build/Products/Release-iphoneos" -name "*.app" | head -n 1)
+
+          if [ -z "$APP_PATH" ]; then
+            echo "No .app found"
+            find "$DERIVED_DATA/Build/Products" -maxdepth 4 -type d
+            exit 1
+          fi
+
+          echo "Found app at: $APP_PATH"
+          cp -R "$APP_PATH" Payload/
+          zip -r GBALinkEmulator.ipa Payload
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: GBALinkEmulator-IPA
+          path: GBALinkEmulator.ipa
