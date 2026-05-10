@@ -191,19 +191,86 @@ jobs:
           lipo -info mgba-dist/lib/libmgba.a
 
       # ── 3. Patch the Xcode project with libmgba.a ──────────────────
-      #   Uses the Python script in scripts/patch_pbxproj.py.
-      #   This injects:
-      #     • A PBXFileReference for libmgba.a
-      #     • A PBXBuildFile linking it
-      #     • Header Search Paths for mgba-dist/include
-      #     • Library Search Paths for mgba-dist/lib
-      #     • Other Linker Flags: -lmgba -lz -lc++
+      #   Inline Python — no external script file needed.
+      #   Injects: PBXFileReference, PBXBuildFile, Header/Library search
+      #   paths, and Other Linker Flags: -lmgba -lz -lc++
       - name: Patch Xcode project for mGBA
+        env:
+          PBXPROJ:  "${{ env.PROJECT }}/project.pbxproj"
+          LIB_PATH: "${{ github.workspace }}/mgba-dist/lib/libmgba.a"
+          INC_PATH: "${{ github.workspace }}/mgba-dist/include"
         run: |
-          python3 scripts/patch_pbxproj.py \
-            --pbxproj   "${{ env.PROJECT }}/project.pbxproj" \
-            --lib-path  "${{ github.workspace }}/mgba-dist/lib/libmgba.a" \
-            --inc-path  "${{ github.workspace }}/mgba-dist/include"
+          python3 <<'PYEOF'
+          import os, re, uuid, sys
+
+          pbxproj  = os.environ["PBXPROJ"]
+          lib_path = os.environ["LIB_PATH"]
+          inc_path = os.environ["INC_PATH"]
+          lib_dir  = lib_path.rsplit("/", 1)[0]
+
+          with open(pbxproj) as f:
+              src = f.read()
+
+          if "libmgba.a" in src:
+              print("Already patched — skipping.")
+              sys.exit(0)
+
+          def uid():
+              return uuid.uuid4().hex[:24].upper()
+
+          FILE_REF   = uid()
+          BUILD_FILE = uid()
+
+          # 1. PBXFileReference
+          src = src.replace(
+              "/* End PBXFileReference section */",
+              f'\t\t{FILE_REF} = {{isa = PBXFileReference; '
+              f'lastKnownFileType = archive.ar; name = libmgba.a; '
+              f'path = "{lib_path}"; sourceTree = "<absolute>"; }};\n'
+              "/* End PBXFileReference section */"
+          )
+
+          # 2. PBXBuildFile
+          src = src.replace(
+              "/* End PBXBuildFile section */",
+              f'\t\t{BUILD_FILE} = {{isa = PBXBuildFile; '
+              f'fileRef = {FILE_REF} /* libmgba.a */; }};\n'
+              "/* End PBXBuildFile section */"
+          )
+
+          # 3. Add to PBXFrameworksBuildPhase
+          src = re.sub(
+              r"(isa = PBXFrameworksBuildPhase;.*?files = \()(.*?)(\);)",
+              lambda m: (
+                  m.group(1) + m.group(2) +
+                  f"\n\t\t\t\t{BUILD_FILE} /* libmgba.a in Frameworks */," +
+                  m.group(3)
+              ),
+              src, flags=re.DOTALL
+          )
+
+          # 4. Inject build settings into every buildSettings block
+          extras = [
+              f'LIBRARY_SEARCH_PATHS = ("{lib_dir}",);',
+              f'HEADER_SEARCH_PATHS = ("{inc_path}",);',
+              'OTHER_LDFLAGS = ("-lmgba", "-lz", "-lc++");',
+          ]
+
+          def inject(m):
+              block = m.group(0)
+              for entry in extras:
+                  key = entry.split("=")[0].strip()
+                  if key not in block:
+                      block = block[:-1].rstrip() + "\n\t\t\t\t" + entry + "\n\t\t\t}"
+              return block
+
+          src = re.sub(r"buildSettings = \{[^}]*\}", inject, src, flags=re.DOTALL)
+
+          with open(pbxproj, "w") as f:
+              f.write(src)
+
+          print("project.pbxproj patched successfully.")
+          PYEOF
 
       # ── 4. Select Xcode version ────────────────────────────────────
       - name: Select Xcode 15
