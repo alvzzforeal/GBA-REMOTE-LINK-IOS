@@ -74,7 +74,7 @@ static const int kAudioBufSize = 4096;
 - (BOOL)loadROM:(NSString *)path error:(NSError **)outError {
 #if MGBA_AVAILABLE
     // ── Real mGBA path ────────────────────────────────────────────────────
-    _core = mCoreCreate(PLATFORM_GBA);
+    _core = mCoreCreate(mPLATFORM_GBA);  // fixed: was PLATFORM_GBA (renamed in mGBA 0.10.x)
     if (!_core) {
         if (outError) {
             *outError = [NSError errorWithDomain:@"GBABridge" code:1
